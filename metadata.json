@@ -1,0 +1,5 @@
+{
+  "name": "TENTANDO DIA 30",
+  "description": "Uma aplicação que demonstra um fluxo de engenharia de software simplificado, permitindo ao usuário escolher entre uma loja simples ou um blog pessoal e baixar a estrutura do projeto em formato .zip.",
+  "requestFramePermissions": []
+}

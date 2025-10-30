@@ -183,6 +183,12 @@ export default defineSchema({
         price: v.number(),
         quantity: v.number(),
     })),
+    shippingAddress: v.object({
+        fullName: v.string(),
+        address: v.string(),
+        city: v.string(),
+        postalCode: v.string(),
+    }),
   }),
   users: defineTable({
     name: v.string(),
@@ -363,6 +369,12 @@ export const create = mutation({
             price: v.number(),
             quantity: v.number(),
         })),
+        shippingAddress: v.object({
+            fullName: v.string(),
+            address: v.string(),
+            city: v.string(),
+            postalCode: v.string(),
+        }),
     },
     handler: async (ctx, args) => {
         const identity = await ctx.auth.getUserIdentity();
@@ -1202,49 +1214,22 @@ const storeCartPageContent = `'use client';
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import { useCart } from '@/context/CartContext';
-import { useMutation } from 'convex/react';
-import { api } from '@/convex/_generated/api';
 import { useUser, SignInButton } from '@clerk/nextjs';
 import styles from './page.module.css';
 
 const CartPage: React.FC = () => {
-  const { cart, removeFromCart, updateCartQuantity, clearCart } = useCart();
-  const createOrder = useMutation(api.orders.create);
-  const [isLoading, setIsLoading] = React.useState(false);
+  const { cart, removeFromCart, updateCartQuantity } = useCart();
   const { isSignedIn } = useUser();
   const router = useRouter();
   const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
-  const handleCheckout = async () => {
+  const handleCheckout = () => {
     if (cart.length === 0) {
       alert('Seu carrinho está vazio.');
       return;
     }
-    if (!isSignedIn) {
-        alert('Por favor, faça login para finalizar a compra.');
-        return;
-    }
-    setIsLoading(true);
-
-    const saleData = {
-      items: cart.map(item => ({
-        productId: item._id,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity,
-      })),
-      total: total,
-    };
-
-    try {
-      const orderId = await createOrder(saleData);
-      clearCart();
-      router.push(\`/order-confirmation?orderId=\${orderId}\`);
-    } catch (error) {
-      console.error("Falha ao finalizar o pedido:", error);
-      alert(\`Ocorreu um erro ao finalizar o pedido: \${(error as Error).message}\`);
-      setIsLoading(false);
-    }
+    // A verificação de login será feita na página de checkout
+    router.push('/checkout');
   };
 
   return (
@@ -1266,11 +1251,11 @@ const CartPage: React.FC = () => {
                 </div>
                 <div className={styles.itemControls}>
                   <div className={styles.quantityControl}>
-                    <button onClick={() => updateCartQuantity(item._id, -1)} disabled={isLoading}>-</button>
+                    <button onClick={() => updateCartQuantity(item._id, -1)}>-</button>
                     <span>{item.quantity}</span>
-                    <button onClick={() => updateCartQuantity(item._id, 1)} disabled={isLoading}>+</button>
+                    <button onClick={() => updateCartQuantity(item._id, 1)}>+</button>
                   </div>
-                  <button onClick={() => removeFromCart(item._id)} className={styles.removeButton} disabled={isLoading}>Remover</button>
+                  <button onClick={() => removeFromCart(item._id)} className={styles.removeButton}>Remover</button>
                 </div>
               </div>
             ))}
@@ -1281,13 +1266,13 @@ const CartPage: React.FC = () => {
                 <button
                 onClick={handleCheckout}
                 className={styles.checkoutButton}
-                disabled={isLoading || cart.length === 0}
+                disabled={cart.length === 0}
                 >
-                {isLoading ? 'Processando...' : 'Finalizar Compra'}
+                Ir para o Checkout
                 </button>
             ) : (
                 <div className={styles.signInPrompt}>
-                    <p>Você precisa estar logado para finalizar a compra.</p>
+                    <p>Você precisa estar logado para continuar.</p>
                     <SignInButton mode="modal">
                         <button className={styles.checkoutButton}>Fazer Login</button>
                     </SignInButton>
@@ -1302,8 +1287,7 @@ const CartPage: React.FC = () => {
 
 export default CartPage;
 `;
-const storeCartPageCssContent = `
-.container {
+const storeCartPageCssContent = `.container {
   max-width: 900px;
   margin: 2.5rem auto;
   padding: 2rem;
@@ -1385,6 +1369,8 @@ const storeCartPageCssContent = `
 .summary {
   margin-top: 2rem;
   text-align: right;
+  border-top: 2px solid var(--border-color);
+  padding-top: 1.5rem;
 }
 
 .summaryTitle {
@@ -1394,7 +1380,7 @@ const storeCartPageCssContent = `
 
 .checkoutButton {
   margin-top: 1rem;
-  background-color: var(--green-accent);
+  background-color: var(--primary-accent);
   color: white;
   font-weight: 700;
   padding: 0.8rem 2rem;
@@ -1402,7 +1388,7 @@ const storeCartPageCssContent = `
   transition: background-color 0.2s, opacity 0.2s;
 }
 .checkoutButton:hover {
-  background-color: var(--green-accent-hover);
+  background-color: var(--primary-accent-hover);
 }
 .checkoutButton:disabled {
   opacity: 0.7;
@@ -1419,12 +1405,6 @@ const storeCartPageCssContent = `
 .signInPrompt p {
     color: var(--text-secondary);
 }
-.signInPrompt .checkoutButton {
-    background-color: var(--primary-accent);
-}
-.signInPrompt .checkoutButton:hover {
-    background-color: var(--primary-accent-hover);
-}
 
 
 @media (max-width: 640px) {
@@ -1434,7 +1414,9 @@ const storeCartPageCssContent = `
         gap: 0.5rem;
     }
     .itemControls {
-        align-items: flex-end;
+        align-items: flex-start;
+        width: 100%;
+        margin-top: 0.5rem;
     }
     .summary {
         text-align: center;
@@ -1442,6 +1424,303 @@ const storeCartPageCssContent = `
     .signInPrompt {
         align-items: center;
     }
+}
+`;
+const checkoutPageContent = `'use client';
+import React, { useState, FormEvent, ChangeEvent } from 'react';
+import { useRouter } from 'next/navigation';
+import { useCart } from '@/context/CartContext';
+import { useMutation } from 'convex/react';
+import { api } from '@/convex/_generated/api';
+import { useUser, RedirectToSignIn } from '@clerk/nextjs';
+import styles from './page.module.css';
+
+const CheckoutPage: React.FC = () => {
+  const { cart, clearCart } = useCart();
+  const createOrder = useMutation(api.orders.create);
+  const [isLoading, setIsLoading] = useState(false);
+  const { isSignedIn, isLoaded, user } = useUser();
+  const router = useRouter();
+  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+  const [shippingInfo, setShippingInfo] = useState({
+    fullName: user?.fullName || '',
+    address: '',
+    city: '',
+    postalCode: '',
+  });
+
+  const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setShippingInfo(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handlePlaceOrder = async (e: FormEvent) => {
+    e.preventDefault();
+    if (cart.length === 0) {
+      alert('Seu carrinho está vazio.');
+      return;
+    }
+    setIsLoading(true);
+
+    const saleData = {
+      items: cart.map(item => ({
+        productId: item._id,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity,
+      })),
+      total: total,
+      shippingAddress: shippingInfo,
+    };
+
+    try {
+      const orderId = await createOrder(saleData);
+      clearCart();
+      router.push(\`/order-confirmation?orderId=\${orderId}\`);
+    } catch (error) {
+      console.error("Falha ao criar o pedido:", error);
+      alert(\`Ocorreu um erro ao criar o pedido: \${(error as Error).message}\`);
+      setIsLoading(false);
+    }
+  };
+
+  if (!isLoaded) {
+      return <div className={styles.loading}>Carregando autenticação...</div>;
+  }
+
+  if (!isSignedIn) {
+    return <RedirectToSignIn />;
+  }
+  
+  if (cart.length === 0 && isLoaded) {
+      return (
+          <div className={styles.container}>
+              <h1 className={styles.title}>Seu carrinho está vazio</h1>
+              <p style={{textAlign: 'center', color: 'var(--text-secondary)'}}>Adicione produtos ao seu carrinho antes de prosseguir para o checkout.</p>
+          </div>
+      )
+  }
+
+  return (
+    <div className={styles.container}>
+      <h1 className={styles.title}>Finalizar Compra</h1>
+      <div className={styles.layout}>
+        <form onSubmit={handlePlaceOrder} className={styles.formContainer}>
+            <div className={styles.formSection}>
+                <h2 className={styles.sectionTitle}>Endereço de Entrega</h2>
+                <div className={styles.formGroup}>
+                    <label htmlFor="fullName">Nome Completo</label>
+                    <input type="text" id="fullName" name="fullName" value={shippingInfo.fullName} onChange={handleInputChange} required />
+                </div>
+                <div className={styles.formGroup}>
+                    <label htmlFor="address">Endereço</label>
+                    <input type="text" id="address" name="address" placeholder="Rua, número e complemento" value={shippingInfo.address} onChange={handleInputChange} required />
+                </div>
+                <div className={styles.formRow}>
+                    <div className={styles.formGroup}>
+                        <label htmlFor="city">Cidade</label>
+                        <input type="text" id="city" name="city" value={shippingInfo.city} onChange={handleInputChange} required />
+                    </div>
+                    <div className={styles.formGroup}>
+                        <label htmlFor="postalCode">CEP</label>
+                        <input type="text" id="postalCode" name="postalCode" placeholder="00000-000" value={shippingInfo.postalCode} onChange={handleInputChange} required />
+                    </div>
+                </div>
+            </div>
+
+            <div className={styles.formSection}>
+                <h2 className={styles.sectionTitle}>Pagamento</h2>
+                <p className={styles.disclaimer}>Esta é uma loja de demonstração. Nenhuma cobrança real será feita.</p>
+                <div className={styles.formGroup}>
+                    <label>Número do Cartão</label>
+                    <input type="text" placeholder="**** **** **** ****" disabled />
+                </div>
+                <div className={styles.formRow}>
+                    <div className={styles.formGroup}>
+                        <label>Validade</label>
+                        <input type="text" placeholder="MM/AA" disabled />
+                    </div>
+                    <div className={styles.formGroup}>
+                        <label>CVC</label>
+                        <input type="text" placeholder="***" disabled />
+                    </div>
+                </div>
+            </div>
+            
+             <button type="submit" className={styles.confirmButton} disabled={isLoading || cart.length === 0}>
+                {isLoading ? 'Processando...' : 'Finalizar Pedido e Pagar'}
+            </button>
+        </form>
+
+        <div className={styles.summary}>
+          <h2 className={styles.sectionTitle}>Resumo da Compra</h2>
+          {cart.map(item => (
+            <div key={item._id} className={styles.item}>
+              <span className={styles.itemName}>{item.name} (x{item.quantity})</span>
+              <span>R$ {(item.price * item.quantity).toFixed(2).replace('.', ',')}</span>
+            </div>
+          ))}
+          <div className={styles.total}>
+            <strong>Total</strong>
+            <strong>R$ {total.toFixed(2).replace('.', ',')}</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CheckoutPage;
+`;
+const checkoutPageCssContent = `.container {
+  max-width: 1100px;
+  margin: 2.5rem auto;
+  padding: 0 2rem;
+}
+
+.loading {
+    text-align: center;
+    padding: 4rem;
+    font-size: 1.2rem;
+    color: var(--text-secondary);
+}
+
+.title {
+  font-size: 2.2rem;
+  font-weight: 700;
+  margin-bottom: 2rem;
+  text-align: center;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2rem;
+}
+
+@media (min-width: 992px) {
+  .layout {
+    grid-template-columns: 1.5fr 1fr;
+    gap: 3rem;
+  }
+}
+
+.formContainer {
+    background-color: var(--background-light);
+    padding: 2rem;
+    border-radius: 12px;
+}
+
+.formSection {
+    margin-bottom: 2rem;
+}
+
+.sectionTitle {
+  font-size: 1.4rem;
+  font-weight: 600;
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.formGroup {
+    margin-bottom: 1rem;
+}
+
+.formGroup label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.formGroup input {
+    width: 100%;
+    padding: 0.8rem 1rem;
+    background-color: var(--background-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 1rem;
+}
+.formGroup input:focus {
+    outline: none;
+    border-color: var(--primary-accent);
+}
+.formGroup input:disabled {
+    background-color: #2a3341;
+    cursor: not-allowed;
+}
+
+.formRow {
+    display: flex;
+    gap: 1rem;
+}
+.formRow .formGroup {
+    flex: 1;
+}
+
+.summary {
+  background-color: var(--background-light);
+  padding: 2rem;
+  border-radius: 12px;
+  height: fit-content;
+  position: sticky;
+  top: 120px;
+}
+
+.item {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+.item:last-of-type {
+    border-bottom: none;
+}
+.itemName {
+    padding-right: 1rem;
+}
+
+.total {
+  display: flex;
+  justify-content: space-between;
+  font-size: 1.25rem;
+  padding-top: 1rem;
+  margin-top: 1rem;
+  border-top: 2px solid var(--border-color);
+  font-weight: bold;
+}
+
+.disclaimer {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-bottom: 1.5rem;
+    background-color: var(--background-dark);
+    padding: 0.8rem;
+    border-radius: 6px;
+}
+
+.confirmButton {
+  background-color: var(--green-accent);
+  color: white;
+  font-weight: 700;
+  padding: 1rem 2rem;
+  border-radius: 8px;
+  transition: background-color 0.2s, opacity 0.2s;
+  width: 100%;
+  font-size: 1.1rem;
+  margin-top: 1rem;
+}
+
+.confirmButton:hover {
+  background-color: var(--green-accent-hover);
+}
+
+.confirmButton:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
 }
 `;
 const storeAdminPageContent = `'use client';
@@ -2665,6 +2944,8 @@ export const PROJECT_TEMPLATES: Record<'store' | 'blog', ProjectTemplate> = {
       'src/app/admin/page.module.css': storeAdminPageCssContent,
       'src/app/cart/page.tsx': storeCartPageContent,
       'src/app/cart/page.module.css': storeCartPageCssContent,
+      'src/app/checkout/page.tsx': checkoutPageContent,
+      'src/app/checkout/page.module.css': checkoutPageCssContent,
       'src/app/order-confirmation/page.tsx': orderConfirmationPageContent,
       'src/app/order-confirmation/page.module.css': orderConfirmationPageCssContent,
       'src/app/ConvexProviderWithClerk.tsx': convexProviderWithClerkContent,

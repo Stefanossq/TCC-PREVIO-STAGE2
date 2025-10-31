@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback } from 'react';
 import { ProjectType } from './types';
 import SelectionScreen from './components/SelectionScreen';
@@ -5,7 +6,7 @@ import GenerationScreen from './components/GenerationScreen';
 import ResultScreen from './components/ResultScreen';
 import ThemeScreen from './components/ThemeScreen';
 import { PROJECT_TEMPLATES, createConvexProductsContent, AIProduct } from './lib/templates';
-import { generateProductsWithImages } from './lib/gemini';
+import { generateProductsWithImages, generateCarProductsWithImages } from './lib/gemini';
 
 
 const App: React.FC = () => {
@@ -33,23 +34,39 @@ const App: React.FC = () => {
   }, []);
 
   const handleGenerateProducts = useCallback(async (theme: string) => {
-    const { products: aiProducts, images: productImages } = await generateProductsWithImages(theme);
+    let generationResult;
+    let lifecyclePrefix = 'Gerando produtos e imagens com IA ✨';
+
+    if (theme === '__CARS__') {
+        lifecyclePrefix = 'Buscando dados de veículos e gerando imagens 🚗';
+        generationResult = await generateCarProductsWithImages();
+    } else {
+        generationResult = await generateProductsWithImages(theme);
+    }
+    
+    const { products: aiProducts, images: productImages } = generationResult;
     
     const template = PROJECT_TEMPLATES.store;
     const updatedFiles = { ...template.files };
 
     const imagePaths: string[] = [];
     productImages.forEach((base64Image, index) => {
-        const imagePath = `public/images/product_${index}.png`;
-        updatedFiles[imagePath] = { base64: base64Image };
-        imagePaths.push(`/${imagePath.replace('public/', '')}`);
+        if (base64Image) {
+            const imagePath = `public/images/product_${index}.png`;
+            updatedFiles[imagePath] = { base64: base64Image };
+            imagePaths.push(`/${imagePath.replace('public/', '')}`);
+        } else {
+            // Use a placeholder if image generation failed for this product
+            const placeholderText = theme === '__CARS__' ? aiProducts[index].name : "Imagem Indisponível";
+            imagePaths.push(`https://placehold.co/300x300/1f2937/d1d5db?text=${encodeURIComponent(placeholderText)}`);
+        }
     });
 
     const newProductsFileContent = createConvexProductsContent(aiProducts, imagePaths);
     updatedFiles['convex/products.ts'] = newProductsFileContent;
 
     const updatedLifecycle = [
-      'Gerando produtos e imagens com IA ✨',
+      lifecyclePrefix,
       ...template.lifecycle,
     ];
 

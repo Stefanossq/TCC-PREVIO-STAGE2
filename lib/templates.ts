@@ -201,17 +201,18 @@ const storePackageJsonContent = `{
     "start": "next start"
   },
   "dependencies": {
-    "react": "^18",
-    "react-dom": "^18",
-    "next": "14.2.3",
+    "@clerk/nextjs": "^5.1.2",
+    "@google/genai": "^1.28.0",
     "convex": "^1.12.0",
-    "@clerk/nextjs": "^5.1.2"
+    "next": "14.2.3",
+    "react": "^18",
+    "react-dom": "^18"
   },
   "devDependencies": {
-    "typescript": "^5",
     "@types/node": "^20",
     "@types/react": "^18",
-    "@types/react-dom": "^18"
+    "@types/react-dom": "^18",
+    "typescript": "^5"
   }
 }`;
 const storeReadmeContent = `# Loja Simples com Next.js, Convex e Clerk
@@ -223,6 +224,7 @@ Este é um projeto Next.js com um backend reativo usando Convex e autenticação
 - Node.js
 - Uma conta Convex (gratuita em [convex.dev](https://convex.dev))
 - Uma conta Clerk (gratuita em [clerk.com](https://clerk.com))
+- Uma API Key do Google AI (gratuita em [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey))
 
 ## Como Executar
 
@@ -244,7 +246,9 @@ Este é um projeto Next.js com um backend reativo usando Convex e autenticação
 
 4.  **Configure as Variáveis de Ambiente:**
     *   Crie um arquivo \`.env.local\` na raiz do projeto. Você pode copiar o \`.env.local.example\`.
-    *   Adicione as chaves do Clerk que você copiou no passo 2. O arquivo deve ficar parecido com isto:
+    *   Adicione as chaves do Clerk que você copiou no passo 2.
+    *   Adicione sua **API Key do Google AI** para habilitar a geração de imagens de produtos no painel de admin.
+    *   O arquivo deve ficar parecido com isto:
 
     \`\`\`
     # Clerk
@@ -255,6 +259,9 @@ Este é um projeto Next.js com um backend reativo usando Convex e autenticação
 
     # A URL do Convex será preenchida automaticamente ao rodar 'npx convex dev'
     # NEXT_PUBLIC_CONVEX_URL=...
+
+    # Google AI API Key
+    API_KEY="sua_google_ai_api_key"
     \`\`\`
 
 5.  **Execute a Aplicação:**
@@ -725,6 +732,10 @@ CLERK_JWT_ISSUER_DOMAIN=
 
 # Convex - Será preenchido automaticamente ao rodar 'npx convex dev'
 NEXT_PUBLIC_CONVEX_URL=
+
+# Google AI API Key - Necessário para a geração de imagens de produtos no painel de admin
+# Obtenha em https://aistudio.google.com/app/apikey
+API_KEY=
 `;
 const storeTypesContent = `import { Doc } from "../convex/_generated/dataModel";
 
@@ -2037,6 +2048,7 @@ const AdminDashboard: React.FC = () => {
   const [editingProduct, setEditingProduct] = useState<EditableProduct | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [salesSearchTerm, setSalesSearchTerm] = useState('');
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
 
   useEffect(() => {
     if (editingProduct && editingProduct._id) {
@@ -2118,6 +2130,39 @@ const AdminDashboard: React.FC = () => {
     setEditingProduct({ ...editingProduct, [e.target.name]: e.target.value });
   };
 
+  const handleGenerateImage = async () => {
+    if (!editingProduct?.name || !editingProduct?.description) {
+      alert('Por favor, preencha o nome e a descrição do produto para gerar uma imagem.');
+      return;
+    }
+    setIsGeneratingImage(true);
+    try {
+      const response = await fetch('/api/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editingProduct.name, description: editingProduct.description }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Falha na comunicação com o servidor.');
+      }
+
+      const { base64Image } = await response.json();
+      const imageUrl = \`data:image/png;base64,\${base64Image}\`;
+      
+      if (editingProduct) {
+        setEditingProduct({ ...editingProduct, imageUrl });
+      }
+
+    } catch (error) {
+      console.error('Erro ao gerar imagem:', error);
+      alert(\`Falha ao gerar a imagem: \${(error as Error).message}\`);
+    } finally {
+      setIsGeneratingImage(false);
+    }
+  };
+
   const renderContent = () => {
     if (products === undefined || sales === undefined) return <p className={styles.noData}>Carregando dados...</p>;
     
@@ -2196,8 +2241,19 @@ const AdminDashboard: React.FC = () => {
                 <div className={styles.formGroup}><label htmlFor="stock">Estoque</label><input id="stock" name="stock" type="number" value={editingProduct.stock} onChange={handleInputChange} required /></div>
                 <div className={styles.formGroup}><label htmlFor="category">Categoria</label><input id="category" name="category" type="text" value={editingProduct.category} onChange={handleInputChange} required /></div>
               </div>
-              <div className={styles.formGroup}><label htmlFor="imageUrl">URL da Imagem</label><input id="imageUrl" name="imageUrl" type="text" value={editingProduct.imageUrl} onChange={handleInputChange} required /></div>
-              <div className={styles.formGroup}><label htmlFor="description">Descrição</label><textarea id="description" name="description" value={editingProduct.description} onChange={handleInputChange} required rows={3}></textarea></div>
+              <div className={styles.formGroup}>
+                <label htmlFor="description">Descrição</label>
+                <textarea id="description" name="description" value={editingProduct.description} onChange={handleInputChange} required rows={3}></textarea>
+              </div>
+              <div className={styles.formGroup}>
+                <label htmlFor="imageUrl">URL da Imagem</label>
+                <div className={styles.imageInputContainer}>
+                    <input id="imageUrl" name="imageUrl" type="text" value={editingProduct.imageUrl} onChange={handleInputChange} required />
+                    <button type="button" onClick={handleGenerateImage} disabled={isGeneratingImage || !editingProduct?.name || !editingProduct?.description} className={styles.generateImageButton}>
+                        {isGeneratingImage ? 'Gerando...' : 'Gerar com IA ✨'}
+                    </button>
+                </div>
+              </div>
               <div className={styles.modalActions}><button type="button" onClick={closeModal} className={styles.cancelButton}>Cancelar</button><button type="submit" className={styles.saveButton}>Salvar</button></div>
             </form>
           </div>
@@ -2492,6 +2548,34 @@ const storeAdminPageCssContent = `
 .saveButton:hover { background-color: var(--primary-accent-hover); }
 .cancelButton { background-color: var(--border-color); }
 .cancelButton:hover { background-color: #4b5563; }
+
+.imageInputContainer {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.imageInputContainer input {
+    flex-grow: 1;
+}
+.generateImageButton {
+    padding: 0.7rem 1rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    border-radius: 6px;
+    background-color: #38bdf8;
+    color: white;
+    white-space: nowrap;
+    transition: background-color 0.2s, opacity 0.2s;
+}
+.generateImageButton:hover {
+    background-color: #0ea5e9;
+}
+.generateImageButton:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+    background-color: #38bdf8;
+}
+
 
 /* Responsive Adjustments */
 @media (max-width: 768px) {
@@ -2873,6 +2957,49 @@ const toasterCssContent = `@keyframes slideInUp {
 }
 .closeButton:hover {
     opacity: 1;
+}
+`;
+
+const storeApiGenerateImageContent = `import { GoogleGenAI, Modality } from "@google/genai";
+import { NextResponse } from 'next/server';
+
+export async function POST(request: Request) {
+  try {
+    const { name, description } = await request.json();
+
+    if (!name || !description) {
+      return NextResponse.json({ error: 'Name and description are required.' }, { status: 400 });
+    }
+    
+    // The API key is read from the server's environment variables
+    if (!process.env.API_KEY) {
+        throw new Error("API_KEY environment variable not set.");
+    }
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+            parts: [{ text: \`Uma foto de estúdio profissional e de alta qualidade do produto: "\${name}", que é "\${description}". O fundo deve ser limpo e minimalista, em cor sólida.\` }],
+        },
+        config: {
+            responseModalities: [Modality.IMAGE],
+        },
+    });
+    
+    for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData) {
+            return NextResponse.json({ base64Image: part.inlineData.data });
+        }
+    }
+
+    throw new Error("Nenhuma imagem foi gerada.");
+
+  } catch (error) {
+    console.error('Error in generate-image API route:', error);
+    const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+    return NextResponse.json({ error: \`Failed to generate image: \${errorMessage}\` }, { status: 500 });
+  }
 }
 `;
 
@@ -3379,6 +3506,7 @@ export const PROJECT_TEMPLATES: Record<'store' | 'blog', ProjectTemplate> = {
       'src/app/checkout/page.module.css': checkoutPageCssContent,
       'src/app/order-confirmation/page.tsx': orderConfirmationPageContent,
       'src/app/order-confirmation/page.module.css': orderConfirmationPageCssContent,
+      'src/app/api/generate-image/route.ts': storeApiGenerateImageContent,
       'src/app/ConvexProviderWithClerk.tsx': convexProviderWithClerkContent,
       'src/app/favicon.ico': { base64: faviconBase64Content },
       'src/app/globals.css': storeGlobalsCssContent,

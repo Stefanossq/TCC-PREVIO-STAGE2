@@ -194,6 +194,15 @@ export default defineSchema({
     name: v.string(),
     clerkId: v.string(),
   }).index("by_clerk_id", ["clerkId"]),
+  cart: defineTable({
+    userId: v.id("users"),
+    items: v.array(
+      v.object({
+        productId: v.id("products"),
+        quantity: v.number(),
+      })
+    ),
+  }).index("by_userId", ["userId"]),
 });
 `;
 const convexAuthConfigContent = `
@@ -395,7 +404,19 @@ export const create = mutation({
                const newStock = product.stock - item.quantity;
                await ctx.db.patch(item.productId, { stock: newStock });
            }
-           return await ctx.db.insert("sales", { ...args, userId });
+           const saleId = await ctx.db.insert("sales", { ...args, userId });
+
+           // Limpa o carrinho do usuário após a venda ser criada
+           const cart = await ctx.db
+            .query("cart")
+            .withIndex("by_userId", (q) => q.eq("userId", userId))
+            .unique();
+           
+           if (cart) {
+               await ctx.db.patch(cart._id, { items: [] });
+           }
+           
+           return saleId;
         };
         
         const user = await ctx.db
@@ -409,6 +430,161 @@ export const create = mutation({
              return await createSaleAndUpdateStock(userId);
         } else {
              return await createSaleAndUpdateStock(user._id);
+        }
+    }
+});
+`;
+const convexCartContent = `import { query, mutation } from "./_generated/server";
+import { v } from "convex/values";
+import { MutationCtx } from "./_generated/server";
+import { Doc } from "./_generated/dataModel";
+
+// Helper to get or create a user document from a mutation context
+const getOrCreateUser = async (ctx: MutationCtx): Promise<Doc<"users">> => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+        throw new Error("Usuário não autenticado.");
+    }
+    
+    // Check if user exists
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerk_id", (q) => q.eq("clerkId", identity.subject))
+      .unique();
+
+    if (user !== null) {
+        return user;
+    }
+
+    // If not, create a new user
+    const newUser = {
+        name: identity.name!,
+        clerkId: identity.subject,
+    };
+    const userId = await ctx.db.insert("users", newUser);
+    
+    const createdUser = await ctx.db.get(userId);
+    if (!createdUser) {
+        // This case should not happen in practice
+        throw new Error("Falha ao criar e buscar o usuário.");
+    }
+    return createdUser;
+};
+
+// Get cart for the current user, with product details
+export const get = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return [];
+    }
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerk_id", (q) => q.eq("clerkId", identity.subject))
+      .unique();
+
+    if (!user) {
+      return [];
+    }
+    
+    const cart = await ctx.db
+        .query("cart")
+        .withIndex("by_userId", (q) => q.eq("userId", user._id))
+        .unique();
+    
+    if (!cart) {
+        return [];
+    }
+
+    const cartWithProducts = await Promise.all(cart.items.map(async (item) => {
+        const product = await ctx.db.get(item.productId);
+        if (!product) return null;
+        return {
+            ...product,
+            quantity: item.quantity,
+        };
+    }));
+
+    return cartWithProducts.filter(item => item !== null);
+  },
+});
+
+// Add an item to the cart
+export const addItem = mutation({
+    args: { productId: v.id("products"), quantity: v.number() },
+    handler: async (ctx, { productId, quantity }) => {
+        const user = await getOrCreateUser(ctx);
+        const userId = user._id;
+
+        const cart = await ctx.db
+            .query("cart")
+            .withIndex("by_userId", (q) => q.eq("userId", userId))
+            .unique();
+
+        if (!cart) {
+            await ctx.db.insert("cart", {
+                userId,
+                items: [{ productId, quantity }],
+            });
+            return;
+        }
+
+        const existingItemIndex = cart.items.findIndex(item => item.productId === productId);
+        
+        if (existingItemIndex !== -1) {
+            cart.items[existingItemIndex].quantity += quantity;
+        } else {
+            cart.items.push({ productId, quantity });
+        }
+        
+        await ctx.db.patch(cart._id, { items: cart.items });
+    },
+});
+
+// Update item quantity
+export const updateItemQuantity = mutation({
+    args: { productId: v.id("products"), quantity: v.number() },
+    handler: async (ctx, { productId, quantity }) => {
+        const user = await getOrCreateUser(ctx);
+        const cart = await ctx.db.query("cart").withIndex("by_userId", q => q.eq("userId", user._id)).unique();
+        if (!cart) throw new Error("Carrinho não encontrado.");
+
+        const itemIndex = cart.items.findIndex(item => item.productId === productId);
+        if (itemIndex === -1) throw new Error("Item não encontrado.");
+
+        if (quantity > 0) {
+            cart.items[itemIndex].quantity = quantity;
+        } else {
+            cart.items.splice(itemIndex, 1);
+        }
+
+        await ctx.db.patch(cart._id, { items: cart.items });
+    }
+});
+
+
+// Remove item from cart
+export const removeItem = mutation({
+    args: { productId: v.id("products") },
+    handler: async (ctx, { productId }) => {
+        const user = await getOrCreateUser(ctx);
+        const cart = await ctx.db.query("cart").withIndex("by_userId", q => q.eq("userId", user._id)).unique();
+        if (!cart) return;
+
+        const updatedItems = cart.items.filter(item => item.productId !== productId);
+        await ctx.db.patch(cart._id, { items: updatedItems });
+    },
+});
+
+// Clear the cart
+export const clear = mutation({
+    args: {},
+    handler: async (ctx) => {
+        const user = await getOrCreateUser(ctx);
+        const cart = await ctx.db.query("cart").withIndex("by_userId", q => q.eq("userId", user._id)).unique();
+        if (cart) {
+            await ctx.db.patch(cart._id, { items: [] });
         }
     }
 });
@@ -450,18 +626,9 @@ CLERK_JWT_ISSUER_DOMAIN=
 # Convex - Será preenchido automaticamente ao rodar 'npx convex dev'
 NEXT_PUBLIC_CONVEX_URL=
 `;
-const storeTypesContent = `import { Id } from "../convex/_generated/dataModel";
+const storeTypesContent = `import { Doc } from "../convex/_generated/dataModel";
 
-export interface Product {
-  _id: Id<"products">;
-  _creationTime: number;
-  name: string;
-  price: number;
-  description: string;
-  category: string;
-  stock: number;
-  imageUrl: string;
-}
+export type Product = Doc<"products">;
 
 export interface CartItem extends Product {
   quantity: number;
@@ -541,6 +708,8 @@ import Footer from "@/components/Footer";
 import ConvexProviderWithClerkComponent from "./ConvexProviderWithClerk";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ptBR } from "@clerk/localizations";
+import { ToasterProvider } from "@/context/ToasterContext";
+import Toaster from "@/components/Toaster";
 
 
 const inter = Inter({ subsets: ["latin"] });
@@ -560,13 +729,16 @@ export default function RootLayout({
       <html lang="pt-BR">
         <body className={inter.className}>
           <ConvexProviderWithClerkComponent>
-            <CartProvider>
-              <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-                <Header />
-                <main style={{ flexGrow: 1 }}>{children}</main>
-                <Footer />
-              </div>
-            </CartProvider>
+            <ToasterProvider>
+              <CartProvider>
+                <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+                  <Header />
+                  <main style={{ flexGrow: 1 }}>{children}</main>
+                  <Footer />
+                </div>
+                <Toaster />
+              </CartProvider>
+            </ToasterProvider>
           </ConvexProviderWithClerkComponent>
         </body>
       </html>
@@ -574,16 +746,20 @@ export default function RootLayout({
   );
 }`;
 const storeCartContextContent = `'use client';
-import React, { createContext, useState, useContext, ReactNode } from 'react';
-import { Product, CartItem } from '@/types';
+import React, { createContext, useContext, ReactNode, useMemo } from 'react';
+import { useUser } from '@clerk/nextjs';
+import { useQuery, useMutation } from 'convex/react';
+import { api } from '@/convex/_generated/api';
 import { Id } from '@/convex/_generated/dataModel';
+import { CartItem } from '@/types';
+import { useToaster } from './ToasterContext';
 
 interface CartContextType {
   cart: CartItem[];
-  addToCart: (product: Product) => void;
-  removeFromCart: (productId: Id<"products">) => void;
-  updateCartQuantity: (productId: Id<"products">, amount: number) => void;
-  clearCart: () => void;
+  isLoading: boolean;
+  addToCart: (productId: Id<"products">) => Promise<void>;
+  removeFromCart: (productId: Id<"products">) => Promise<void>;
+  updateCartQuantity: (productId: Id<"products">, newQuantity: number) => Promise<void>;
   cartCount: number;
 }
 
@@ -598,50 +774,61 @@ export const useCart = (): CartContextType => {
 };
 
 export const CartProvider = ({ children }: { children: ReactNode }) => {
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const { isSignedIn } = useUser();
+  const { showToast } = useToaster();
+  
+  const cartData = useQuery(api.cart.get, !isSignedIn ? 'skip' : undefined);
+  
+  const addItem = useMutation(api.cart.addItem);
+  const removeItem = useMutation(api.cart.removeItem);
+  const updateQuantity = useMutation(api.cart.updateItemQuantity);
 
-  const addToCart = (product: Product) => {
-    setCart(prevCart => {
-      const existingProduct = prevCart.find(item => item._id === product._id);
-      if (existingProduct) {
-        return prevCart.map(item =>
-          item._id === product._id ? { ...item, quantity: item.quantity + 1 } : item
-        );
-      }
-      return [...prevCart, { ...product, quantity: 1 }];
-    });
+  const isLoading = cartData === undefined;
+  const cart = (cartData as CartItem[] | undefined) || [];
+
+  const addToCart = async (productId: Id<"products">) => {
+    if (!isSignedIn) {
+        showToast('Você precisa estar logado para adicionar itens.', 'info');
+        return;
+    }
+    try {
+        await addItem({ productId, quantity: 1 });
+        showToast('Produto adicionado ao carrinho!', 'success');
+    } catch (error) {
+        console.error('Failed to add item to cart:', error);
+        showToast('Erro ao adicionar produto.', 'error');
+    }
   };
 
-  const removeFromCart = (productId: Id<"products">) => {
-    setCart(prevCart => prevCart.filter(item => item._id !== productId));
+  const removeFromCart = async (productId: Id<"products">) => {
+    try {
+        await removeItem({ productId });
+        showToast('Produto removido do carrinho.', 'success');
+    } catch (error) {
+        console.error('Failed to remove item from cart:', error);
+        showToast('Erro ao remover produto.', 'error');
+    }
   };
 
-  const updateCartQuantity = (productId: Id<"products">, amount: number) => {
-    setCart(prevCart => {
-      return prevCart
-        .map(item => {
-          if (item._id === productId) {
-            const newQuantity = item.quantity + amount;
-            return newQuantity > 0 ? { ...item, quantity: newQuantity } : null;
-          }
-          return item;
-        })
-        .filter((item): item is CartItem => item !== null);
-    });
+  const updateCartQuantity = async (productId: Id<"products">, quantity: number) => {
+    try {
+        await updateQuantity({ productId, quantity });
+    } catch (error) {
+        console.error('Failed to update item quantity:', error);
+        showToast('Erro ao atualizar quantidade.', 'error');
+    }
   };
 
-  const clearCart = () => {
-    setCart([]);
-  };
-
-  const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+  const cartCount = useMemo(() => {
+    return cart.reduce((sum, item) => sum + item.quantity, 0);
+  }, [cart]);
 
   const value: CartContextType = {
     cart,
+    isLoading,
     addToCart,
     removeFromCart,
     updateCartQuantity,
-    clearCart,
     cartCount,
   };
 
@@ -930,6 +1117,7 @@ import React, { useState } from 'react';
 import { useCart } from '@/context/CartContext';
 import { Product } from '@/types';
 import styles from './ProductCard.module.css';
+import { Id } from '@/convex/_generated/dataModel';
 
 interface ProductCardProps {
   product: Product;
@@ -937,18 +1125,12 @@ interface ProductCardProps {
 
 const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
   const { addToCart } = useCart();
-  const [buttonText, setButtonText] = useState('Adicionar ao Carrinho');
   const [isAdding, setIsAdding] = useState(false);
 
-  const handleButtonClick = (product: Product) => {
+  const handleButtonClick = async (productId: Id<"products">) => {
     setIsAdding(true);
-    setButtonText('Adicionado!');
-    addToCart(product);
-
-    setTimeout(() => {
-      setButtonText('Adicionar ao Carrinho');
-      setIsAdding(false);
-    }, 1000);
+    await addToCart(productId);
+    setIsAdding(false);
   };
   
   return (
@@ -963,11 +1145,11 @@ const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
       <div className={styles.cardFooter}>
         <p className={styles.price}>R$ {product.price.toFixed(2).replace('.', ',')}</p>
         <button 
-          className={\`\${styles.button} \${isAdding ? styles.buttonAdding : ''}\`}
-          onClick={() => handleButtonClick(product)}
+          className={styles.button}
+          onClick={() => handleButtonClick(product._id)}
           disabled={isAdding}
         >
-          {buttonText}
+          {isAdding ? 'Adicionando...' : 'Adicionar ao Carrinho'}
         </button>
       </div>
     </div>
@@ -1048,10 +1230,7 @@ const storeProductCardCssContent = `
 
 .button:disabled {
   cursor: not-allowed;
-}
-
-.buttonAdding {
-  background-color: var(--green-accent);
+  background-color: #0c8ab8;
 }
 `;
 const storeHeaderContent = `'use client';
@@ -1218,7 +1397,7 @@ import { useUser, SignInButton } from '@clerk/nextjs';
 import styles from './page.module.css';
 
 const CartPage: React.FC = () => {
-  const { cart, removeFromCart, updateCartQuantity } = useCart();
+  const { cart, removeFromCart, updateCartQuantity, isLoading } = useCart();
   const { isSignedIn } = useUser();
   const router = useRouter();
   const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
@@ -1231,6 +1410,15 @@ const CartPage: React.FC = () => {
     // A verificação de login será feita na página de checkout
     router.push('/checkout');
   };
+
+  if (isLoading) {
+    return (
+        <div className={styles.container}>
+             <h1 className={styles.title}>Seu Carrinho</h1>
+             <p className={styles.emptyMessage}>Carregando carrinho...</p>
+        </div>
+    )
+  }
 
   return (
     <div className={styles.container}>
@@ -1251,9 +1439,9 @@ const CartPage: React.FC = () => {
                 </div>
                 <div className={styles.itemControls}>
                   <div className={styles.quantityControl}>
-                    <button onClick={() => updateCartQuantity(item._id, -1)}>-</button>
+                    <button onClick={() => updateCartQuantity(item._id, item.quantity - 1)}>-</button>
                     <span>{item.quantity}</span>
-                    <button onClick={() => updateCartQuantity(item._id, 1)}>+</button>
+                    <button onClick={() => updateCartQuantity(item._id, item.quantity + 1)}>+</button>
                   </div>
                   <button onClick={() => removeFromCart(item._id)} className={styles.removeButton}>Remover</button>
                 </div>
@@ -1436,7 +1624,7 @@ import { useUser, RedirectToSignIn } from '@clerk/nextjs';
 import styles from './page.module.css';
 
 const CheckoutPage: React.FC = () => {
-  const { cart, clearCart } = useCart();
+  const { cart } = useCart();
   const createOrder = useMutation(api.orders.create);
   const [isLoading, setIsLoading] = useState(false);
   const { isSignedIn, isLoaded, user } = useUser();
@@ -1476,7 +1664,6 @@ const CheckoutPage: React.FC = () => {
 
     try {
       const orderId = await createOrder(saleData);
-      clearCart();
       router.push(\`/order-confirmation?orderId=\${orderId}\`);
     } catch (error) {
       console.error("Falha ao criar o pedido:", error);
@@ -2446,6 +2633,149 @@ const orderConfirmationPageCssContent = `
 }
 `;
 
+const toasterContextContent = `'use client';
+import React, { createContext, useState, useContext, ReactNode, useCallback } from 'react';
+
+type ToastType = 'success' | 'error' | 'info';
+
+export interface ToastState {
+  message: string;
+  type: ToastType;
+  id: number;
+}
+
+interface ToastContextType {
+  showToast: (message: string, type?: ToastType) => void;
+  toast: ToastState | null;
+  hideToast: () => void;
+}
+
+const ToastContext = createContext<ToastContextType | undefined>(undefined);
+
+export const ToasterProvider = ({ children }: { children: ReactNode }) => {
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [timerId, setTimerId] = useState<NodeJS.Timeout | null>(null);
+
+  const hideToast = useCallback(() => {
+    setToast(null);
+    if (timerId) clearTimeout(timerId);
+  }, [timerId]);
+
+  const showToast = useCallback((message: string, type: ToastType = 'success') => {
+    if (timerId) clearTimeout(timerId);
+    setToast({ message, type, id: Date.now() });
+    const newTimerId = setTimeout(() => {
+        setToast(null);
+    }, 3000);
+    setTimerId(newTimerId);
+  }, [timerId]);
+
+
+  return (
+    <ToastContext.Provider value={{ showToast, toast, hideToast }}>
+      {children}
+    </ToastContext.Provider>
+  );
+};
+
+export const useToaster = (): ToastContextType => {
+  const context = useContext(ToastContext);
+  if (context === undefined) {
+    throw new Error('useToaster must be used within a ToasterProvider');
+  }
+  return context;
+};
+`;
+
+const toasterComponentContent = `'use client';
+import React from 'react';
+import { useToaster } from '@/context/ToasterContext';
+import styles from './Toaster.module.css';
+
+const Toaster: React.FC = () => {
+    const { toast, hideToast } = useToaster();
+    if (!toast) return null;
+    
+    const icons = {
+        success: '✅',
+        error: '❌',
+        info: 'ℹ️'
+    };
+
+    return (
+        <div className={\`\${styles.toaster} \${styles[toast.type]}\`} role="alert" aria-live="assertive">
+            <span className={styles.icon} aria-hidden="true">{icons[toast.type]}</span>
+            <p className={styles.message}>{toast.message}</p>
+            <button onClick={hideToast} className={styles.closeButton} aria-label="Fechar notificação">&times;</button>
+        </div>
+    );
+};
+
+export default Toaster;
+`;
+
+const toasterCssContent = `@keyframes slideInUp {
+    from {
+        transform: translate(-50%, 100px);
+        opacity: 0;
+    }
+    to {
+        transform: translate(-50%, 0);
+        opacity: 1;
+    }
+}
+
+.toaster {
+    position: fixed;
+    bottom: 2rem;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    color: var(--background-dark);
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    animation: slideInUp 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+    min-width: 300px;
+    justify-content: center;
+}
+
+.toaster.success {
+    background-color: var(--green-accent);
+}
+
+.toaster.error {
+    background-color: var(--red-accent);
+}
+
+.toaster.info {
+    background-color: var(--primary-accent);
+}
+
+.icon {
+    font-size: 1.2rem;
+}
+
+.message {
+    font-weight: 600;
+    margin: 0; /* Override default p margin */
+}
+
+.closeButton {
+    font-size: 1.5rem;
+    line-height: 1;
+    opacity: 0.8;
+    margin-left: auto;
+    padding-left: 1rem;
+}
+.closeButton:hover {
+    opacity: 1;
+}
+`;
+
 
 // --- TEMPLATES FOR 'BLOG' PROJECT ---
 
@@ -2936,6 +3266,7 @@ export const PROJECT_TEMPLATES: Record<'store' | 'blog', ProjectTemplate> = {
     ],
     files: {
       'convex/auth.config.ts': convexAuthConfigContent,
+      'convex/cart.ts': convexCartContent,
       'convex/orders.ts': convexOrdersContent,
       'convex/products.ts': convexProductsContent,
       'convex/schema.ts': convexSchemaContent,
@@ -2962,7 +3293,10 @@ export const PROJECT_TEMPLATES: Record<'store' | 'blog', ProjectTemplate> = {
       'src/components/ProductList.module.css': storeProductListCssContent,
       'src/components/ProductCard.tsx': storeProductCardContent,
       'src/components/ProductCard.module.css': storeProductCardCssContent,
+      'src/components/Toaster.tsx': toasterComponentContent,
+      'src/components/Toaster.module.css': toasterCssContent,
       'src/context/CartContext.tsx': storeCartContextContent,
+      'src/context/ToasterContext.tsx': toasterContextContent,
       'src/types/index.ts': storeTypesContent,
       'src/convex/_generated/api.d.ts': '// This file is auto-generated by Convex. Do not edit.',
       'src/convex/_generated/dataModel.d.ts': '// This file is auto-generated by Convex. Do not edit.',

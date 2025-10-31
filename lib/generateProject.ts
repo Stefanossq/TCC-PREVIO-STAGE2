@@ -30,15 +30,16 @@ const addFilesToZip = (zip: any, files: Record<string, string | { base64: string
 /**
  * Generates a ZIP file for the specified project type and initiates download.
  * @param projectType The type of project to generate ('store' or 'blog').
+ * @param filesToZip The file map to be included in the zip.
  */
-export const generateProjectZip = async (projectType: ProjectType): Promise<void> => {
+export const generateProjectZip = async (projectType: ProjectType, filesToZip: Record<string, any>): Promise<void> => {
   const project = PROJECT_TEMPLATES[projectType];
   if (!project) {
     throw new Error(`Project template for "${projectType}" not found.`);
   }
 
   const zip = new JSZip();
-  addFilesToZip(zip, project.files);
+  addFilesToZip(zip, filesToZip);
 
   const blob = await zip.generateAsync({ type: 'blob' });
   saveAs(blob, `${project.slug}.zip`);

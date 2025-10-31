@@ -60,13 +60,13 @@ const FileTreeItem: React.FC<FileTreeItemProps> = ({ node, level, onSelectFile, 
 };
 
 
-const ResultScreen: React.FC<{ projectType: ProjectType, onReset: () => void }> = ({ projectType, onReset }) => {
+const ResultScreen: React.FC<{ projectType: ProjectType, projectFiles: Record<string, any>, onReset: () => void }> = ({ projectType, projectFiles, onReset }) => {
   const [isDownloading, setIsDownloading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
   const codeBlockRef = useRef<HTMLElement>(null);
 
   const project = PROJECT_TEMPLATES[projectType];
-  const structure = useMemo(() => buildFileTree(project.files), [project.files]);
+  const structure = useMemo(() => buildFileTree(projectFiles), [projectFiles]);
 
   useEffect(() => {
     const findFirstFile = (nodes: FileNode[]): FileNode | null => {
@@ -110,14 +110,14 @@ const ResultScreen: React.FC<{ projectType: ProjectType, onReset: () => void }> 
   const handleDownload = useCallback(async () => {
     setIsDownloading(true);
     try {
-      await generateProjectZip(projectType);
+      await generateProjectZip(projectType, projectFiles);
     } catch (error) {
       console.error("Failed to generate zip file:", error);
       alert("Ocorreu um erro ao gerar o arquivo zip.");
     } finally {
       setIsDownloading(false);
     }
-  }, [projectType]);
+  }, [projectType, projectFiles]);
 
   return (
     <div className="bg-gray-800 border border-gray-700/50 rounded-lg p-6 w-full flex flex-col space-y-6 animate-fade-in">
